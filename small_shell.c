@@ -20,7 +20,7 @@ volatile int foreground_only_mode = 0;
 // Function prototypes for built-in commands
 void handle_cd(const char *args);
 void handle_status(int *exit_status);
-void handle_exit(int *exit_status);
+void handle_exit();
 
 // SIGINT handler
 void sigint_handler(int signo) {
@@ -79,14 +79,23 @@ void terminate_process(pid_t pid) {
     }
 }
 // In your handle_exit function:
-void handle_exit(int *exit_status) {
+void handle_exit() {
     // Iterate through the list of background process PIDs and send SIGTERM
     for (int i = 0; i < num_background_processes; i++) {
         terminate_process(background_process_pids[i]);
     }
 
     // Cleanup and exit the shell
-    exit(*exit_status);
+    exit(0);
+}
+
+void handle_pwd() {
+    char cwd[1024];
+    if (getcwd(cwd, sizeof(cwd)) != NULL) {
+        printf("%s\n", cwd);
+    } else {
+        perror("getcwd() error");
+    }
 }
 
 
@@ -130,37 +139,39 @@ int main() {
         // Remove newline character from the input
         input[strcspn(input, "\n")] = '\0';
 
-        // Check for blank lines or comments
-        if (input[0] == '\0' || input[0] == '#') {
-            // Ignore blank lines and comments
-            continue;
-        }
-
         // Tokenize the input and check for specific commands
-        char *token = strtok(input, " ");
-        if (token != NULL) {
-            // Check for "cd" command
-            if (strcmp(token, "cd") == 0) {
-                // Pass the rest of the input (directory path) to the function
-                token = strtok(NULL, " ");
-                handle_cd(token);
-            }
-            // Check for "status" command
-            else if (strcmp(token, "status") == 0) {
-                handle_status(&exit_status);
-            }
-            // Check for "exit" command
-            else if (strcmp(token, "exit") == 0) {
-                handle_exit(&exit_status);
-            }
-            // Handle other commands or implement error handling
-            else {
-                // Implement logic for executing non-built-in commands
-                // ...
-            }
-        }
+    char *token = strtok(input, " ");
+    
+    // Check for blank lines or comments
+    if (token == NULL || token[0] == '#') {
+        // Ignore blank lines and comments
+        continue;
     }
 
+    // Check for "pwd" command
+    if (strcmp(token, "pwd") == 0) {
+        handle_pwd();
+    }
+    // Check for "cd" command
+    else if (strcmp(token, "cd") == 0) {
+        // Pass the rest of the input (directory path) to the function
+        token = strtok(NULL, " ");
+        handle_cd(token);
+    }
+    // Check for "status" command
+    else if (strcmp(token, "status") == 0) {
+        handle_status(&exit_status);
+    }
+    // Check for "exit" command
+    else if (strcmp(token, "exit") == 0) {
+        handle_exit();
+    }
+    // Handle other commands or implement error handling
+    else {
+        // Implement logic for executing non-built-in commands
+        // ...
+    }
+    }
     // Cleanup and exit
     return 0;
 }
