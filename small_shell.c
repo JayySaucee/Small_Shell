@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/wait.h>
 
 #define MAX_CHAR_LENGTH 2048            // Maximum character length
 #define MAX_ARGUMENTS 512               // Maximum amount of characters
@@ -19,8 +20,10 @@ volatile int foreground_only_mode = 0;
 
 // Function prototypes for built-in commands
 void handle_cd(const char *args);
-void handle_status(int *exit_status);
+void handle_status(int exit_status);
 void handle_exit();
+void execute_command(char *args[], int *exit_status);
+
 
 // SIGINT handler
 void sigint_handler(int signo) {
@@ -66,9 +69,14 @@ void handle_cd(const char *path) {
 }
 
 // Function to handle the "status" command
-void handle_status(int *exit_status) {
-    // Print the exit status or terminating signal of the last foreground process
-    printf("Exit status: %d\n", *exit_status);
+void handle_status(int exit_status) {
+    if (WIFEXITED(exit_status)) {
+        // The child exited normally; print the exit status
+        printf("Exit status: %d\n", WEXITSTATUS(exit_status));
+    } else if (WIFSIGNALED(exit_status)) {
+        // The child process terminated due to a signal; print the signal number
+        printf("Terminated by signal: %d\n", WTERMSIG(exit_status));
+    }
 }
 
 // Function to send a termination signal to a process
@@ -89,14 +97,34 @@ void handle_exit() {
     exit(0);
 }
 
-void handle_pwd() {
-    char cwd[1024];
-    if (getcwd(cwd, sizeof(cwd)) != NULL) {
-        printf("%s\n", cwd);
+void execute_command(char *args[], int *exit_status) {
+    pid_t pid = fork();
+
+    if (pid == -1) {
+        // Forking error
+        perror("fork");
+    } else if (pid == 0) {
+        // Child process
+        if (execvp(args[0], args) == -1) {
+            perror("execvp");
+            exit(EXIT_FAILURE); // If execvp fails, exit the child process
+        }
     } else {
-        perror("getcwd() error");
+        // Parent process
+        int status;
+        do {
+            waitpid(pid, &status, WUNTRACED); // Wait for the child process to finish
+        } while (!WIFEXITED(status) && !WIFSIGNALED(status)); // Loop until the child process has not exited
+
+        // Update the exit_status with either the exit status or the signal number
+        if (WIFEXITED(status)) {
+            *exit_status = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            *exit_status = WTERMSIG(status);
+        }
     }
 }
+
 
 
 void setup_signal_handlers() {
@@ -139,39 +167,39 @@ int main() {
         // Remove newline character from the input
         input[strcspn(input, "\n")] = '\0';
 
-        // Tokenize the input and check for specific commands
-    char *token = strtok(input, " ");
-    
-    // Check for blank lines or comments
-    if (token == NULL || token[0] == '#') {
-        // Ignore blank lines and comments
-        continue;
-    }
+        // Tokenize the input into an argument list
+        char *args[MAX_ARGUMENTS];
+        int arg_count = 0;
+        char *token = strtok(input, " ");
 
-    // Check for "pwd" command
-    if (strcmp(token, "pwd") == 0) {
-        handle_pwd();
-    }
-    // Check for "cd" command
-    else if (strcmp(token, "cd") == 0) {
-        // Pass the rest of the input (directory path) to the function
+        while (token != NULL && arg_count < MAX_ARGUMENTS - 1) {
+        args[arg_count++] = token;
         token = strtok(NULL, " ");
-        handle_cd(token);
+        }
+
+        args[arg_count] = NULL; // Null-terminate the argument list
+
+        if (arg_count == 0 || args[0][0] == '#') {
+            // Ignore blank lines and comments
+            continue;
+        }
+
+    // Check for built-in commands
+    if (strcmp(args[0], "cd") == 0) {
+    handle_cd(args[1]); // args[1] will be NULL if no argument is provided
     }
-    // Check for "status" command
-    else if (strcmp(token, "status") == 0) {
-        handle_status(&exit_status);
+    else if (strcmp(args[0], "status") == 0) {
+    handle_status(exit_status);
     }
-    // Check for "exit" command
-    else if (strcmp(token, "exit") == 0) {
-        handle_exit();
+    else if (strcmp(args[0], "exit") == 0) {
+    handle_exit();
     }
-    // Handle other commands or implement error handling
+    // Handle non-built-in commands
     else {
-        // Implement logic for executing non-built-in commands
-        // ...
+    execute_command(args, &exit_status);
     }
-    }
-    // Cleanup and exit
-    return 0;
+  }
+// Cleanup and exit
+return 0;
+
 }
