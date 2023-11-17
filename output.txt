@@ -1,0 +1,6 @@
+total 112
+-rw-r--r--  1 jorgealejandre  staff     79 Nov  5 23:49 README.md
+-rw-r--r--  1 jorgealejandre  staff      0 Nov 17 15:22 output.txt
+-rwxr-xr-x@ 1 jorgealejandre  staff   2251 Nov 17 01:04 p3testscript.txt
+-rwxr-xr-x  1 jorgealejandre  staff  35848 Nov 17 15:18 small_shell
+-rw-r--r--@ 1 jorgealejandre  staff  10831 Nov 17 15:15 small_shell.c

@@ -3,7 +3,11 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <signal.h>
+#include <sys/stat.h> // For mode constants
 #include <sys/wait.h>
+#include <errno.h>
+#include <fcntl.h>    // For open
+#include <unistd.h>   // For read, write, close, dup2
 
 #define MAX_CHAR_LENGTH 2048            // Maximum character length
 #define MAX_ARGUMENTS 512               // Maximum amount of characters
@@ -22,7 +26,7 @@ volatile int foreground_only_mode = 0;
 void handle_cd(const char *args);
 void handle_status(int exit_status);
 void handle_exit();
-void execute_command(char *args[], int *exit_status);
+void execute_command(char *args[], int *exit_status, int runInBackground);
 
 
 // SIGINT handler
@@ -34,16 +38,38 @@ void sigint_handler(int signo) {
 // SIGTSTP handler
 void sigtstp_handler(int signo) {
     // Toggle the foreground-only mode
-    foreground_only_mode = !foreground_only_mode;
 
     char *message;
-    if (foreground_only_mode) {
+    if (foreground_only_mode == 0) {
         message = "\nEntering foreground-only mode (& is now ignored)";
+        foreground_only_mode = 1;
     } else {
         message = "\nExiting foreground-only mode";
+        foreground_only_mode = 0;
     }
     write(STDERR_FILENO, message, strlen(message));
+}
 
+void sigchld_handler(int signo) {
+    int saved_errno = errno; // Save current errno
+    pid_t pid;
+    int status;
+
+   while ((pid = waitpid((pid_t)(-1), &status, WNOHANG)) > 0) {
+        // Check if the pid is in the background_process_pids array before printing
+        int i;
+        for (i = 0; i < num_background_processes; i++) {
+            if (background_process_pids[i] == pid) {
+                // Found a background process that has completed
+                printf("Background pid %d is done: ", pid);
+                handle_status(status);
+                // Remove pid from the array or mark it as completed
+                break;
+            }
+        }
+    }
+
+    errno = saved_errno; // Restore errno
 }
 
 // Function to handle the "cd" command
@@ -72,7 +98,7 @@ void handle_cd(const char *path) {
 void handle_status(int exit_status) {
     if (WIFEXITED(exit_status)) {
         // The child exited normally; print the exit status
-        printf("Exit status: %d\n", WEXITSTATUS(exit_status));
+        printf("Exit value: %d\n", WEXITSTATUS(exit_status));
     } else if (WIFSIGNALED(exit_status)) {
         // The child process terminated due to a signal; print the signal number
         printf("Terminated by signal: %d\n", WTERMSIG(exit_status));
@@ -89,7 +115,8 @@ void terminate_process(pid_t pid) {
 // In your handle_exit function:
 void handle_exit() {
     // Iterate through the list of background process PIDs and send SIGTERM
-    for (int i = 0; i < num_background_processes; i++) {
+    int i;
+    for (i = 0; i < num_background_processes; i++) {
         terminate_process(background_process_pids[i]);
     }
 
@@ -97,38 +124,138 @@ void handle_exit() {
     exit(0);
 }
 
-void execute_command(char *args[], int *exit_status) {
+void setup_redirection(char *args[], char **input_file, char **output_file) {
+    int i;
+    for (i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], "<") == 0 && args[i + 1] != NULL) {
+            *input_file = args[i + 1];
+            // Shift the rest of the arguments
+            int j;
+            for (j = i; args[j - 1] != NULL; j++) {
+                args[j] = args[j + 2];
+            }
+            i--; // Adjust index after shifting
+        } else if (strcmp(args[i], ">") == 0 && args[i + 1] != NULL) {
+            *output_file = args[i + 1];
+            // Similar shifting for ">"
+            int j;
+            for (j = i; args[j - 1] != NULL; j++) {
+                args[j] = args[j + 2];
+            }
+            i--; // Adjust index after shifting
+        }
+    }
+}
+
+// Function to replace all occurrences of $$ with the shell's PID
+void expand_pid(char* input) {
+    char* pid_placeholder = "$$";
+    char pid_str[10];
+    snprintf(pid_str, 10, "%d", getpid()); // Convert PID to string
+
+    // Temporary buffer to hold the new string with PIDs expanded
+    char new_input[MAX_CHAR_LENGTH] = {0};
+
+    char* start = input;
+    char* end;
+    while ((end = strstr(start, pid_placeholder)) != NULL) {
+        // Copy the part before the PID placeholder
+        strncat(new_input, start, end - start);
+        // Append the PID
+        strcat(new_input, pid_str);
+        // Move past the placeholder in the input string
+        start = end + strlen(pid_placeholder);
+    }
+    // Copy any remaining part of the input string
+    strcat(new_input, start);
+    // Copy the new input back into the original input variable
+    strcpy(input, new_input);
+}
+
+void execute_command(char *args[], int *exit_status, int runInBackground) {
+    char *input_file = NULL;
+    char *output_file = NULL;
+
+    // Call helper function to set up redirection
+    setup_redirection(args, &input_file, &output_file);
+
     pid_t pid = fork();
 
     if (pid == -1) {
-        // Forking error
         perror("fork");
-    } else if (pid == 0) {
-        // Child process
+    } 
+    else if (pid == 0) { // Child process
+        if (runInBackground) {
+            if (input_file == NULL) {
+                // Redirect stdin to /dev/null for background processes
+                int devNullIn = open("/dev/null", O_RDONLY);
+                if (devNullIn == -1) {
+                    perror("open input /dev/null");
+                    exit(1);
+                }
+                dup2(devNullIn, STDIN_FILENO);
+                close(devNullIn);
+            }
+
+            if (output_file == NULL) {
+                // Redirect stdout to /dev/null for background processes
+                int devNullOut = open("/dev/null", O_WRONLY);
+                if (devNullOut == -1) {
+                    perror("open output /dev/null");
+                    exit(1);
+                }
+                dup2(devNullOut, STDOUT_FILENO);
+                close(devNullOut);
+            }
+        } else {
+            if (input_file != NULL) {
+                int input_fd = open(input_file, O_RDONLY);
+                if (input_fd == -1) {
+                    perror("open input");
+                    exit(1);
+                }
+                dup2(input_fd, STDIN_FILENO);
+                close(input_fd);
+            }
+
+            if (output_file != NULL) {
+                int output_fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+                if (output_fd == -1) {
+                    perror("open output");
+                    exit(1);
+                }
+                dup2(output_fd, STDOUT_FILENO);
+                close(output_fd);
+            }
+        }
+
         if (execvp(args[0], args) == -1) {
             perror("execvp");
-            exit(EXIT_FAILURE); // If execvp fails, exit the child process
+            exit(1);
         }
-    } else {
+    } 
+    else {
         // Parent process
-        int status;
-        do {
-            waitpid(pid, &status, WUNTRACED); // Wait for the child process to finish
-        } while (!WIFEXITED(status) && !WIFSIGNALED(status)); // Loop until the child process has not exited
-
-        // Update the exit_status with either the exit status or the signal number
-        if (WIFEXITED(status)) {
-            *exit_status = WEXITSTATUS(status);
-        } else if (WIFSIGNALED(status)) {
-            *exit_status = WTERMSIG(status);
+        if (!runInBackground) {
+            int status;
+            waitpid(pid, &status, WUNTRACED);
+            if (WIFEXITED(status)) {
+                *exit_status = WEXITSTATUS(status);
+            } else if (WIFSIGNALED(status)) {
+                *exit_status = WTERMSIG(status);
+            }
+        } else {
+            background_process_pids[num_background_processes++] = pid;
+            printf("Started background process PID: %d\n", pid);
         }
     }
 }
 
 
 
+
 void setup_signal_handlers() {
-    struct sigaction SIGINT_action = {0}, SIGTSTP_action = {0};
+    struct sigaction sa_sigchld = {0}, SIGINT_action = {0}, SIGTSTP_action = {0};
 
     // Ignore SIGINT
     SIGINT_action.sa_handler = SIG_IGN;
@@ -141,6 +268,12 @@ void setup_signal_handlers() {
     sigfillset(&SIGTSTP_action.sa_mask);
     SIGTSTP_action.sa_flags = SA_RESTART;
     sigaction(SIGTSTP, &SIGTSTP_action, NULL);
+
+    // Set up SIGCHLD handler
+    sa_sigchld.sa_handler = sigchld_handler;
+    sigemptyset(&sa_sigchld.sa_mask);
+    sa_sigchld.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa_sigchld, NULL);
 }
 
 int main() {
@@ -148,12 +281,13 @@ int main() {
     setup_signal_handlers();
 
     int exit_status = 0; // Initialize exit status
-
+    
     // Shell main loop
     while (1) {
         char input[MAX_CHAR_LENGTH]; // Buffer to store user input
         memset(input, 0, sizeof(input)); // Clear the input buffer
-
+        
+        
         // Display the shell prompt (e.g., ": ")
         printf(": ");
         fflush(stdout);
@@ -164,12 +298,16 @@ int main() {
             break;
         }
 
+        // Expand the PID variables
+        expand_pid(input);
+
         // Remove newline character from the input
         input[strcspn(input, "\n")] = '\0';
 
         // Tokenize the input into an argument list
         char *args[MAX_ARGUMENTS];
         int arg_count = 0;
+        int runInBackground = 0; 
         char *token = strtok(input, " ");
 
         while (token != NULL && arg_count < MAX_ARGUMENTS - 1) {
@@ -184,6 +322,14 @@ int main() {
             continue;
         }
 
+    if (arg_count > 1 && strcmp(args[arg_count - 1], "&") == 0) {
+    if (!foreground_only_mode) {
+        runInBackground = 1; // Set to run in background if not in foreground-only mode
+    }
+    args[arg_count - 1] = NULL; // Remove the "&" from the argument list
+    }
+
+
     // Check for built-in commands
     if (strcmp(args[0], "cd") == 0) {
     handle_cd(args[1]); // args[1] will be NULL if no argument is provided
@@ -196,7 +342,7 @@ int main() {
     }
     // Handle non-built-in commands
     else {
-    execute_command(args, &exit_status);
+    execute_command(args, &exit_status, runInBackground);
     }
   }
 // Cleanup and exit
