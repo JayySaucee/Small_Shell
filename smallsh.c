@@ -99,9 +99,11 @@ void handle_status(int exit_status) {
     if (WIFEXITED(exit_status)) {
         // The child exited normally; print the exit status
         printf("Exit value: %d\n", WEXITSTATUS(exit_status));
+        fflush(stdout);
     } else if (WIFSIGNALED(exit_status)) {
         // The child process terminated due to a signal; print the signal number
         printf("Terminated by signal: %d\n", WTERMSIG(exit_status));
+        fflush(stdout);
     }
 }
 
@@ -211,7 +213,7 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
             if (input_file != NULL) {
                 int input_fd = open(input_file, O_RDONLY);
                 if (input_fd == -1) {
-                    perror("open input");
+                    perror("Open input error");
                     exit(1);
                 }
                 dup2(input_fd, STDIN_FILENO);
@@ -221,7 +223,7 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
             if (output_file != NULL) {
                 int output_fd = open(output_file, O_WRONLY | O_CREAT | O_TRUNC, 0644);
                 if (output_fd == -1) {
-                    perror("open output");
+                    perror("Open output error");
                     exit(1);
                 }
                 dup2(output_fd, STDOUT_FILENO);
@@ -230,7 +232,7 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
         }
 
         if (execvp(args[0], args) == -1) {
-            perror("execvp");
+            perror("Invalid command error");
             exit(1);
         }
     } 
@@ -243,10 +245,15 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
                 *exit_status = WEXITSTATUS(status);
             } else if (WIFSIGNALED(status)) {
                 *exit_status = WTERMSIG(status);
+                printf("Terminated by signal %d\n", *exit_status);
+                fflush(stdout);
             }
-        } else {
+        }
+         else {
+
             background_process_pids[num_background_processes++] = pid;
             printf("Started background process PID: %d\n", pid);
+            fflush(stdout);
         }
     }
 }
