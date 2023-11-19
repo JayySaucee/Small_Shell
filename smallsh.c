@@ -1,3 +1,6 @@
+// Assignment 3: Smallsh
+// Created by Jorge Alejandre
+
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,7 +16,7 @@
 #define MAX_BACKGROUND_PROCESSES 1000   // Maximum amount of background processes, set it to something large for now
 
 #define SIG_INT 2   // Signal number for SIGINT
-#define SIG_TSTP 20 // Signal number for SIGSTP
+#define SIG_TSTP 20 // Signal number for SIGTSTP
 
 pid_t background_process_pids[MAX_BACKGROUND_PROCESSES]; // Declared array to store PIDs
 int num_background_processes = 0; // Initialize these processes to zero
@@ -37,7 +40,7 @@ void sigint_handler(int signo) {
 }
 
 /*
-    SIGSTP handler meant to toggle the foreground-only mode either ON or OFF,
+    SIGTSTP handler meant to toggle the foreground-only mode either ON or OFF,
     this will affect the ability for background processes to occur.
 */
 void sigtstp_handler(int signo) {
@@ -61,7 +64,6 @@ void sigtstp_handler(int signo) {
     function is triggered when a child processes' state is received.
 */
 void sigchld_handler(int signo) {
-    int saved_errno = errno; // Save current errno
     pid_t pid;
     int status;
 
@@ -79,8 +81,6 @@ void sigchld_handler(int signo) {
             }
         }
     }
-
-    errno = saved_errno; // Restore errno
 }
 
 /*
@@ -92,11 +92,10 @@ void handle_cd(const char *path) {
         // If no path is given, change to the home directory
         const char* home = getenv("HOME");
         if (home != NULL) {
+            // If home is variable is set then lets change to it
             if (chdir(home) != 0) {
                 perror("chdir");
             }
-        } else {
-            fprintf(stderr, "cd: HOME environment variable not set.\n");
         }
     } else {
         // If a path is given, attempt to change to that directory
@@ -129,10 +128,7 @@ void handle_status(int exit_status) {
     first
 */
 void terminate_process(pid_t pid) {
-    if (kill(pid, SIGTERM) == -1) {
-        // Handle the error if sending the signal fails
-        perror("kill");
-    }
+    kill(pid, SIGTERM);
 }
 
 /*
@@ -215,11 +211,10 @@ void expand_pid(char* input) {
 }
 
 /*
-    The execute command is fairly complex so there will be more comments 
-    for each section, but overall it will take in some parameters, and proceed
-    to set up redirection to a default location or specific file for a child process,
-    if a parent process is detected then it will wait for pid to return before letting 
-    a user make the next command in the shell.
+    The execute command is fairly complex, but overall it will take in some parameters, 
+    and proceed to set up redirection to a default location or specific file for a child 
+    process, if a parent process is detected then it will wait for pid to return before 
+    letting a user make the next command in the shell.
 */
 void execute_command(char *args[], int *exit_status, int runInBackground) {
     char *input_file = NULL;
@@ -245,10 +240,6 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
             // Input file parameter is NULL, redirect to default (/dev/null)
             if (input_file == NULL) {
                 int devNullIn = open("/dev/null", O_RDONLY);
-                if (devNullIn == -1) {
-                    perror("open input /dev/null");
-                    exit(1);
-                }
                 dup2(devNullIn, STDIN_FILENO);
                 close(devNullIn);
             }
@@ -256,14 +247,10 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
             // Output file parameter is NULL, redirect to default (/dev/null)
             if (output_file == NULL) {
                 int devNullOut = open("/dev/null", O_WRONLY);
-                if (devNullOut == -1) {
-                    perror("open output /dev/null");
-                    exit(1);
-                }
                 dup2(devNullOut, STDOUT_FILENO);
                 close(devNullOut);
             }
-            } 
+        } 
             
             else {
                 //Input file is NOT null, so attempt to open the file for reading
@@ -321,6 +308,7 @@ void execute_command(char *args[], int *exit_status, int runInBackground) {
     and setup the signal handlers we need for ensure the appropiate shell behavior occurs.
 */
 void setup_signal_handlers() {
+    // Initialize SIGINT, SIGTSTP, and SIGCHLD
     struct sigaction sa_sigchld = {0}, SIGINT_action = {0}, SIGTSTP_action = {0};
 
     // Handler for SIGINT
